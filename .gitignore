@@ -1,0 +1,12 @@
+# build artifacts
+build/
+my_redis_server
+*.o
+*.d
+dump.my_rdb
+
+# never commit keys
+*.pem
+id_*
+id_ed25519*
+*.pub
