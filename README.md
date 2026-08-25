@@ -1,10 +1,6 @@
-# my_redis_server (C port)
+# CustomRedis
 
-A small, dependency-free clone of a Redis server, written in C11. This
-is a straight port of an original C++17 implementation, translated
-line-for-line in structure but rebuilt on plain C data structures
-(no STL), with a handful of bug fixes and robustness improvements
-along the way.
+A small, dependency-free clone of a Redis server, written in C11.
 
 It speaks a subset of the real RESP (REdis Serialization Protocol),
 so it's compatible with `redis-cli` and most Redis client libraries
@@ -25,6 +21,9 @@ for the commands it implements.
   minutes, on clean shutdown (`Ctrl+C`), and loads it back on startup
 - Thread-safe: a single mutex guards the whole dataset (simple, and
   fine for this project's scope — see [Concurrency](#concurrency))
+- A hand-rolled hash table where each bucket holds a small binary
+  search tree instead of a plain chain, keeping worst-case lookups
+  at O(log n) instead of degrading to O(n) under heavy collisions
 
 ## Building
 
@@ -48,7 +47,9 @@ make clean    # remove build/ and the binary
 load `dump.my_rdb` from the current directory; if it's not there (or
 fails to parse), it just starts empty.
 
-Talk to it with `redis-cli`:
+This is a network server, not an interactive shell — it only reads
+commands that arrive over its TCP socket, never from its own stdin.
+Talk to it from a second terminal with `redis-cli`:
 
 ```
 redis-cli -p 6379 SET name "hello world"
@@ -67,7 +68,7 @@ before exiting.
 
 ```
 include/
-  hashtable.h              generic string-keyed hash table
+  hashtable.h              generic string-keyed hash table (BST buckets)
   strlist.h                growable array of strings (for LIST values)
   strbuf.h                 growable buffer for building RESP responses
   redis_database.h         the in-memory data store + persistence
@@ -78,24 +79,36 @@ src/
 Makefile
 ```
 
-Three small utility modules (`hashtable`, `strlist`, `strbuf`) exist
-because C has no `std::unordered_map`, `std::vector<std::string>`, or
-`std::ostringstream` — they're direct, minimal stand-ins for those,
-used throughout the rest of the codebase. Everything else mirrors the
-original C++ file-for-file: `RedisDatabase` → `redis_database.*`,
-`RedisCommandHandler` → `redis_command_handler.*`,
-`RedisServer` → `redis_server.*`.
+Three small utility modules (`hashtable`, `strlist`, `strbuf`) sit
+underneath everything else: a generic hash table, a growable string
+array (used for LIST values), and a growable buffer for building RESP
+responses. Everything else is organized around the three natural
+pieces of a server like this: `redis_database.*` (the data store
+itself), `redis_command_handler.*` (parsing client input and
+dispatching to the right command), and `redis_server.*` (the TCP
+accept loop and per-connection threads).
 
 ## Design notes
 
+- **Hash table**: each bucket holds a small binary search tree
+  (ordered by `strcmp` on the key) instead of a plain linked list.
+  A bucket with several colliding keys still resolves lookups in
+  O(log n) instead of degrading to an O(n) chain — the same reasoning
+  that pushed languages like Python and PHP toward collision-resistant
+  hashing after "hash flooding" attacks (crafting many keys that
+  collide into one bucket to force O(n) behavior) became a known DoS
+  class around 2011. It's not a self-balancing tree (no AVL/red-black
+  rotations), so a bucket can still degrade toward a list-like shape
+  if colliding keys happen to be inserted in sorted string order — but
+  an attacker now needs both a bucket collision *and* a specific
+  insertion order to cause it, a meaningfully higher bar than plain
+  chaining. The table also grows automatically as load factor rises.
 - **Ownership**: every `rdb_*` accessor that returns a string (e.g.
   `rdb_get`, `rdb_lget`, `rdb_hgetall`) hands back a freshly
   `strdup`'d copy, never a pointer into internal storage. The caller
-  always owns and must `free()` what it gets back. This matters more
-  in C than in the original C++, since there's no RAII/destructor to
-  make a lifetime bug obvious — returning internal pointers across
-  the mutex boundary would be a real use-after-free risk under
-  concurrent access.
+  always owns and must `free()` what it gets back — returning internal
+  pointers across the mutex boundary would be a real use-after-free
+  risk under concurrent access.
 - **Concurrency**: a single `pthread_mutex_t` inside `RedisDatabase`
   guards all three stores (string/list/hash) plus the expiry map.
   It's coarse-grained — one lock for the whole dataset rather than
@@ -105,36 +118,17 @@ original C++ file-for-file: `RedisDatabase` → `redis_database.*`,
   would be the natural next step if this needed to scale.
 - **Connection handling**: each accepted client gets its own detached
   `pthread`. Detaching (rather than collecting threads into a vector
-  to `join` later, as the original C++ version did) means finished
-  connections clean up their own resources immediately instead of
-  accumulating until process exit.
+  to join later) means finished connections clean up their own
+  resources immediately instead of accumulating until process exit.
+- **RESP parsing**: client-supplied lengths and counts are parsed with
+  `strtol` plus explicit error checking, so a malformed or adversarial
+  RESP frame can't crash a connection thread.
 - **Persistence format**: a simple length-prefixed text format,
   `<byte-length>:<raw-bytes>` per token, one record per line
   (`K key value`, `L key count item...`, `H key count field value...`).
-  This is deliberately more explicit than a naive whitespace-split
-  format so that keys/values containing spaces round-trip correctly
-  (see [Fixes](#fixes-vs-the-original-c-version) below). It still
-  assumes no key or value contains a literal newline byte.
-
-## Fixes vs. the original C++ version
-
-Porting surfaced a few real bugs, fixed here:
-
-1. **`DEL` always returned "not found."** The original computed
-   whether anything was erased but then had an unconditional
-   `return false;` after it. `rdb_del` now returns the actual result.
-2. **Values with spaces corrupted persistence.** The original dump
-   format wrote plain space-separated text and read it back with
-   `istringstream >>`, which splits on whitespace — so a value like
-   `"hello world"` would silently break on reload. The new
-   length-prefixed format handles this correctly.
-3. **Malformed RESP input could crash a connection thread.**
-   `std::stoi` throws on bad input; the C port uses `strtol` with
-   explicit error checking everywhere a client-supplied number is
-   parsed (RESP lengths, `EXPIRE`, `LREM`, `LINDEX`, `LSET`).
-4. **Shutdown log messages could be lost.** The signal handler now
-   flushes stdio before exiting, so the "shutting down" / "dumped"
-   messages reliably show up before the process ends.
+  Being explicit about lengths (rather than splitting on whitespace)
+  means keys and values containing spaces round-trip correctly. It
+  still assumes no key or value contains a literal newline byte.
 
 ## Known limitations
 
