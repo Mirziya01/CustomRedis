@@ -15,10 +15,9 @@
  * PING
  * TEST
  *
- * Ported from the C++ version's parseRespCommand(). The main
- * behavioural difference is that std::stoi (which throws on bad
- * input) is replaced with strtol + explicit error checking, so a
- * malformed length field can no longer crash the connection thread.
+ * Lengths and counts are parsed with strtol plus explicit error
+ * checking (never a bare atoi/scanf on client-controlled input), so
+ * a malformed length field can't crash the connection thread.
  * ------------------------------------------------------------------ */
 
 typedef struct {
@@ -79,8 +78,8 @@ static void parse_resp_command(const char *input, size_t input_len, TokenVec *ou
     if (input_len == 0) return;
 
     if (input[0] != '*') {
-        /* Fallback: split on whitespace, like the C++ version did
-         * for non-RESP input (e.g. a raw telnet session). */
+        /* Fallback: split on whitespace, for non-RESP input
+         * (e.g. a raw telnet session). */
         size_t i = 0;
         while (i < input_len) {
             while (i < input_len && isspace((unsigned char)input[i])) i++;

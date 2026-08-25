@@ -146,9 +146,10 @@ bool rdb_del(RedisDatabase *db, const char *key) {
     pthread_mutex_lock(&db->mutex);
     purge_expired_locked(db);
     bool erased = false;
-    /* Bug fix vs. the original C++: that version computed `erased`
-     * via |= across all three stores but then always `return false`.
-     * Here the accumulated result is actually returned. */
+    /* A key only ever lives in one of the three stores, but check
+     * all three and accumulate the result rather than assuming
+     * which one -- callers rely on the true/false return to know
+     * whether anything was actually removed. */
     erased |= ht_del(db->kv_store, key, free_plain) != 0;
     erased |= ht_del(db->list_store, key, free_strlist_cb) != 0;
     erased |= ht_del(db->hash_store, key, free_hashtable_cb) != 0;
@@ -439,14 +440,12 @@ bool rdb_hmset(RedisDatabase *db, const char *key, const char **fields, const ch
 
 /* ---- Persistence ----
  *
- * The original C++ implementation wrote "K key value\n" and split on
- * whitespace when loading, which silently corrupts any key or value
- * that itself contains a space. This version uses a length-prefixed
- * token format ("<byte-length>:<raw-bytes>") so arbitrary values
- * (including embedded spaces) round-trip correctly. Values containing
- * a literal newline are still unsupported, since records are still
- * one-per-line; that's a reasonable simplification for this project's
- * scope.
+ * Each record uses a length-prefixed token format
+ * ("<byte-length>:<raw-bytes>") rather than splitting on whitespace,
+ * so keys and values containing embedded spaces round-trip correctly.
+ * Values containing a literal newline are still unsupported, since
+ * records are one-per-line; that's a reasonable simplification for
+ * this project's scope.
  */
 static void write_token(FILE *f, const char *s) {
     fprintf(f, "%zu:%s ", strlen(s), s);

@@ -3,9 +3,8 @@
 
 #include <stddef.h>
 
-/* Stateless in this implementation (RedisDatabase is its own
- * singleton), kept as a struct for parity with the original class
- * and in case per-connection state is needed later. */
+/* Stateless for now (RedisDatabase is its own singleton), kept as a
+ * struct in case per-connection state is needed later. */
 typedef struct RedisCommandHandler {
     int _unused;
 } RedisCommandHandler;

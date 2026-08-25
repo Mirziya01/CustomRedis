@@ -3,7 +3,8 @@
 
 #include <stddef.h>
 
-/* A simple growable array of owned (malloc'd) strings.*/
+/* A simple growable array of owned (malloc'd) strings, backing the
+ * LIST_* commands (LPUSH/RPUSH/LPOP/RPOP/LGET/etc). */
 typedef struct {
     char **items;
     size_t count;

@@ -21,9 +21,10 @@ for the commands it implements.
   minutes, on clean shutdown (`Ctrl+C`), and loads it back on startup
 - Thread-safe: a single mutex guards the whole dataset (simple, and
   fine for this project's scope — see [Concurrency](#concurrency))
-- A hand-rolled hash table where each bucket holds a small binary
-  search tree instead of a plain chain, keeping worst-case lookups
-  at O(log n) instead of degrading to O(n) under heavy collisions
+- A hand-rolled hash table where each bucket holds a red-black tree
+  instead of a plain chain, guaranteeing O(log n) lookups even
+  under heavy collisions — not just "usually fast," but height-balanced
+  after every insert and delete
 
 ## Building
 
@@ -68,7 +69,7 @@ before exiting.
 
 ```
 include/
-  hashtable.h              generic string-keyed hash table (BST buckets)
+  hashtable.h              generic string-keyed hash table (red-black tree buckets)
   strlist.h                growable array of strings (for LIST values)
   strbuf.h                 growable buffer for building RESP responses
   redis_database.h         the in-memory data store + persistence
@@ -90,19 +91,20 @@ accept loop and per-connection threads).
 
 ## Design notes
 
-- **Hash table**: each bucket holds a small binary search tree
-  (ordered by `strcmp` on the key) instead of a plain linked list.
-  A bucket with several colliding keys still resolves lookups in
-  O(log n) instead of degrading to an O(n) chain — the same reasoning
-  that pushed languages like Python and PHP toward collision-resistant
-  hashing after "hash flooding" attacks (crafting many keys that
-  collide into one bucket to force O(n) behavior) became a known DoS
-  class around 2011. It's not a self-balancing tree (no AVL/red-black
-  rotations), so a bucket can still degrade toward a list-like shape
-  if colliding keys happen to be inserted in sorted string order — but
-  an attacker now needs both a bucket collision *and* a specific
-  insertion order to cause it, a meaningfully higher bar than plain
-  chaining. The table also grows automatically as load factor rises.
+- **Hash table**: each bucket holds a red-black tree (ordered by
+  `strcmp` on the key) instead of a plain linked list or an unbalanced
+  BST. A red-black tree rebalances itself via rotations and recoloring
+  after every insert and delete, so lookup/insert/delete inside any
+  single bucket is O(log n) *guaranteed* — not just "usually," the
+  way an unbalanced tree can still degrade toward a list shape under
+  an unlucky (or adversarial) insertion order. This closes off the
+  same class of "hash flooding" attack that pushed languages like
+  Python and PHP toward collision-resistant hashing after it became
+  a known DoS technique around 2011 (craft many keys that collide
+  into one bucket to force O(n) behavior) — here, even a bucket
+  forced to hold thousands of colliding keys still only costs
+  O(log n) to search. The table also grows automatically as load
+  factor rises.
 - **Ownership**: every `rdb_*` accessor that returns a string (e.g.
   `rdb_get`, `rdb_lget`, `rdb_hgetall`) hands back a freshly
   `strdup`'d copy, never a pointer into internal storage. The caller

@@ -11,9 +11,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* Global pointer for the signal handler, mirroring the C++ version's
- * `globalServer`. A signal handler can't take extra arguments, so
- * there is no way around some form of global state here. */
+/* Global pointer so the signal handler can reach the running server.
+ * A signal handler can't take extra arguments, so there is no way
+ * around some form of global state here. */
 static RedisServer *g_server = NULL;
 
 static void dump_or_report(void) {
@@ -28,11 +28,10 @@ static void signal_handler(int signum) {
         printf("\nCaught signal %d, shutting down...\n", signum);
         redis_server_shutdown(g_server);
     }
-    /* Flush stdio buffers before terminating -- _exit() (used by the
-     * original C++ version's exit(signum) call indirectly did flush,
-     * since std::cout uses unbuffered-on-exit semantics via atexit
-     * handlers, but a bare _exit() here would not) so that the log
-     * lines above actually reach the terminal/log file. */
+    /* _exit() skips the normal atexit/stdio-flush cleanup that a
+     * regular return from main() would get, so flush explicitly
+     * here -- otherwise the log lines above can be lost, buffered
+     * but never written out before the process ends. */
     fflush(stdout);
     fflush(stderr);
     _exit(signum);
