@@ -1,10 +1,14 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -g
+CFLAGS := -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -g -Iinclude
 LDLIBS := -lreadline
 
-SRCS := main.c cli.c redis_client.c response_parser.c command_handler.c strbuf.c
-OBJS := $(SRCS:.c=.o)
+SRC_DIR := src
+BUILD_DIR := build
 TARGET := my_redis_cli
+
+SRCS := $(wildcard $(SRC_DIR)/*.c)
+OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
+DEPS := $(OBJS:.o=.d)
 
 .PHONY: all clean
 
@@ -13,8 +17,13 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+-include $(DEPS)
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -rf $(BUILD_DIR) $(TARGET)
